@@ -58,24 +58,32 @@ my $TypeId      = 1;                             # Type_Defn
 my $CategoryId  = 1;                             # Category_Defn
 my $SubCatId    = 1;                             # Sub_Category_Defn
 my $StatusId    = 1;                             # Status_Defn
-my $RatingId    = 0;                             # Rating_Defn always None
 my $AuthorId    = 1;                             # Author
+my $LoanDate    = LogDate('D');                  # Default loaned data
 
 # Define some working objects so we don't keep making new ones
 # as we process the records.
 my $FieldCount;                                  # Count of fields in a line
-my @RecData     = ();                            # Working array
+my @RecData     = ();                            # Data file working array
+my @AuthorData  = ();                            # Author working array
 my $BookKey;                                     # Book_ID
 my $SeriesKey;                                   # Series_ID
+my $SeriesNum;                                   # Series_Number
 my $PublisherKey;                                # Publisher_ID
 my $TypeKey;                                     # Type_ID
 my $CategoryKey;                                 # Category_ID
 my $SubCatKey;                                   # Sub_Category_ID
 my $StatusKey;                                   # Status_ID
 my $AuthorKey;                                   # Author_ID
-my $Delim       = '|';                           # Record delimiter
-my $SDelim      = '\|';                          # Need to escape the pipe or
+my $PubMonth;                                    # Publish_Month
+my $PubYear;                                     # Publish_Year
+my $IsbnAsin;                                    # Isbn_Asin
+my $RatingKey    = 0;                            # Rating_ID always None
+my $RDelim       = '|';                          # Record delimiter
+my $RSDelim      = '\|';                         # Need to escape the pipe or
                                                  # split doesn't behave
+my $DDelim       = '/';                          # Date delimiter
+my $ADelim       = ';';                          # Author delimiter
 ######################################################################################
 ### BEGIN PROGRAM
 ######################################################################################
@@ -99,7 +107,8 @@ if ($Message) {
 # Remember the first record is the column headings to skip it if this is record 1
 foreach my $record (<$InFileH>) {
 	# Clear working values to prevent values from jumping records
-	@RecData = ();
+	@RecData     = ();
+	@AuthorData  = ();
 	undef $BookKey;
 	undef $PublisherKey;
 	undef $TypeKey;
@@ -107,18 +116,32 @@ foreach my $record (<$InFileH>) {
 	undef $SubCatKey;
 	undef $StatusKey;
 	undef $AuthorKey;
+	undef $SeriesKey;
+	undef $SeriesNum;
+	undef $PubMonth;
+	undef $PubYear;
+	undef $IsbnAsin;
 	
+	# Update line count to indicate what record we are on
+	$LineCount++;
+	 
 	# Get rid of new line
 	chomp($record);
 	
 	# Skip first line 
-	next if ($LineCount == 0);
+	next if ($LineCount == 1);
+	
+	# For now, log the record
+	WriteLog($LogH, "INFO: $record\n");
 	
 	# Check the count of delimeters. If it isn't the correct number, skip the record
-	$FieldCount  = ($record =~ tr/$Delim//);
+	 # The "tr" construct does not allow variables so it needs to be hardcoded
+	WriteLog($LogH, "INFO: $RDelim \n");
+	#$FieldCount  = ($record =~ tr/$RDelim//);
+	$FieldCount  = ($record =~ tr/\|//);
 	if ($FieldCount != $FieldReq) {
-		WriteLog($LogH, "ERROR: Incorrect number of fields on line $LineCount : $FieldCount");
-		WriteLong($LogH, "INFO: $record");
+		WriteLog($LogH, "ERROR: Incorrect number of fields on line $LineCount : $FieldCount\n");
+		WriteLog($LogH, "INFO: $record\n\n");
 		next;
 	}
 	# Split the file record into a working array. Need to use the escaped version since pipe is regex indicator
@@ -138,7 +161,7 @@ foreach my $record (<$InFileH>) {
 	# Field[12]: Read?
 	# Field[13]: On Loan To:
 	# Field[14]: Notes
-	@RecData = split(/$SDelim/, $record);
+	@RecData = split(/$RSDelim/, $record);
 	
 	# Clean up the data to get avoid potential problems
 	foreach (@RecData) {
@@ -146,40 +169,295 @@ foreach my $record (<$InFileH>) {
         s/^\s+//; # Delete any leading spaces
         s/\s+$//; # Delete any leading or trailing spaces
     }
-	
+	# Temp only to see what is going on
+	foreach my $r (@RecData) {
+		WriteLog($LogH, "INFO: $r\n");
+	}
 	# Start setting the vaules for the Book record.  This will require the Defn hashes to be 
 	# updated and read.  Author will be handled as it's own loop since that data will need to
 	# be split as well.
-	$BookKey = $RecData[2];
+	$BookKey = $RecData[1];
 	
-	# IF the book is in a series, then look up the series id for it and add it to the
-	# the @BookSeries fact
-	
-	# If the book doesn't have a type, then default to Unknown ($PublisherKey = 0).
+	# If the book doesn't have a type, then default to Unknown ($TypeKey = 0).
 	# Otherwise look up the type's id
+	if (length($RecData[6]) > 0) {
+    # Read the lookup for the dimension
+		$TypeKey = lookup_dim($LogH, \%TypeDefn, \$TypeId, $RecData[6]);
+		if (!defined ($TypeKey)) {
+		# Lookup failed.  Log a message and default to Unknown
+			WriteLog($LogH, "ERROR: Unable to retrieve Type ID for $RecData[6] on Book ID: $BookKey\n");
+			$TypeKey = 0;
+		}
+	} else {
+		$TypeKey = 0;
+	}	
 	
-	# If the book doesn't have a category, then default to Unknown ($TypeKey = 0)
+	# If the book doesn't have a category, then default to Unknown ($CategoryKey = 0)
 	# Otherwise look  up the category's id
-	
+	if (length($RecData[7]) > 0) {
+    # Read the lookup for the dimension
+		$CategoryKey = lookup_dim($LogH, \%CategoryDefn, \$CategoryId, $RecData[7]);
+		if (!defined ($CategoryKey)) {
+		# Lookup failed.  Log a message and default to Unknown
+			WriteLog($LogH, "ERROR: Unable to retrieve Category ID for $RecData[7] on Book ID: $BookKey\n");
+			$CategoryKey = 0;
+		}
+	} else {
+		$CategoryKey = 0;
+	}
+
 	# If the book doesn't have a sub-category, then default it to None ($SubCatKey = 0)
 	# Otherwise look up the sub-category's id
+	if (length($RecData[8]) > 0) {
+    # Read the lookup for the dimension
+		$SubCatKey = lookup_dim($LogH, \%SubCatDefn, \$SubCatId, $RecData[8]);
+		if (!defined ($SubCatKey)) {
+		# Lookup failed.  Log a message and default to Unknown
+			WriteLog($LogH, "ERROR: Unable to retrieve Sub_Category ID for $RecData[8] on Book ID: $BookKey\n");
+			$SubCatKey = 0;
+		}
+	} else {
+		$SubCatKey = 0;
+	}
 	
 	# If the book doesn't have a publisher, then default it to Unknown ($PublisherKey = 0)
 	# Otherwise look up the publisher's id
+	if (length($RecData[9]) > 0) {
+    # Read the lookup for the dimension
+		$PublisherKey = lookup_dim($LogH, \%PublisherDefn, \$PublisherId, $RecData[9]);
+		if (!defined ($PublisherKey)) {
+		# Lookup failed.  Log a message and default to Unknown
+			WriteLog($LogH, "ERROR: Unable to retrieve Publisher ID for $RecData[9] on Book ID: $BookKey\n");
+			$PublisherKey = 0;
+		}
+	} else {
+		$PublisherKey = 0;
+	}
+
+    # If the book doesn't have a published date, then default Publish_Month and Publish_Year to a space
+    # Otherwise, try to determine if we have both a month and year or just a year.
+    if (length($RecData[10]) > 0 ) {
+    	# If the value has the date delimiter, then split it into month and year
+    	if ($RecData[10] =~ m/$DDelim/) {
+    		($PubMonth, $PubYear) = split(/$DDelim/, $RecData[10]);
+    		# If month is greater than 2 digits, log problem and use the default
+    		if (length($PubMonth) > 2) {
+    			WriteLog($LogH, "ERROR: Invalid Publish Month $PubMonth on Book ID: $BookKey\n");
+    			$PubMonth = ' ';
+    		}
+    		# If the year isn't 4 digits, log problem and use the default.
+    		if (length($PubYear) != 4) {
+    			WriteLog($LogH, "ERROR: Invald Publish Year: $PubYear on Book ID: $BookKey\n");
+    			$PubYear = ' ';
+    		}
+    	} else {
+    		# This should be just a year.  Set month to default then check that the year
+    		# is 4 digits.
+    		$PubMonth = ' ';
+    		if (length($RecData[10]) == 4 ) {
+    			$PubYear = $RecData[10];
+    		} else {
+    			# Year is incorrect number of digits. Log problem and use the default
+    			WriteLog($LogH, "ERROR: Invalid year only Publish Year: $RecData[10] on Book ID: $BookKey\n");
+    			$PubYear = ' ';
+    		}
+    	}
+    } else {
+    	$PubMonth = ' ';
+    	$PubYear  = ' ';
+    }
+	
+    # If the book doesn't have and ISBN_ASIN number default it to UNKNOWN.
+    # Otherwise use the value from the record.
+    if (length($RecData[11]) > 0) {
+    	$IsbnAsin = $RecData[11];
+    } else {
+    	$IsbnAsin = 'Unknown';
+    }
 	
 	# If the book doesn't have a status, then default it to Unknown ($StatusKey = 0)
 	# Otherwise look up the status's id
+	if (length($RecData[12] > 0)) {
+    # Read the lookup for the dimension
+		$StatusKey = lookup_dim($LogH, \%StatusDefn, \$StatusId, $RecData[12]);
+		if (!defined ($StatusKey)) {
+		# Lookup failed.  Log a message and default to Unknown
+			WriteLog($LogH, "ERROR: Unable to retrieve Status ID for $RecData[12] on Book ID: $BookKey\n");
+			$StatusKey = 0;
+		}
+	} else {
+		$StatusKey = 0;
+	}		
 
 	# Build the complete BOOK record and add it to the @Book fact data
+	#book_id, title, publish_month, publish_year, isbn_asin, category_id, sub_category_id, publisher_id, status_id, rating_id
+	push(@Book, [$BookKey, $RecData[4], $PubMonth, $PubYear, $IsbnAsin, $CategoryKey, $SubCatKey, $PublisherKey, $StatusKey, $RatingKey]);
+	
+	# Set up the other Fact tables
+	# If the book is in a series, then look up the series id for it and add it to the
+	# the @BookSeries fact
+	if (length($RecData[2]) > 0) {
+    # Read the lookup for the dimension
+		$SeriesKey = lookup_dim($LogH, \%SeriesDefn, \$SeriesId, $RecData[2]);
+		if (! defined($SeriesKey)) {
+		# Lookup failed.  Log a message
+		   WriteLog($LogH, "ERROR: Unable to retrieve Series ID for $RecData[2] on Book ID: $BookKey\n");	
+		} else {
+			# Check that there is a series number.  Some series aren't numbered.  If the number is missing,
+			# it needs to be made the default of a single space
+			if (length($RecData[3]) == 0) {
+				$SeriesNum = ' ';
+			} else {
+				$SeriesNum = $RecData[3];
+			}
+			# Add a record to the @BookSeries data
+			    push (@BookSeries, [$BookKey, $SeriesKey, $SeriesNum]);
+		}
+	}
 	
 	# If the book has author's defined, process them.  Authors are a semi-colon delimited
 	# list of names
+	if (length($RecData[5]) > 0) {
+		@AuthorData = split(/$ADelim/, $RecData[5]);
+		foreach my $author (@AuthorData) {
+			undef $AuthorKey;
+			$author =~ s/\t/ /;  # Convert TAB to space. Do first in case it is at the end or beginning.
+            $author =~ s/^\s+//; # Delete any leading spaces
+            $author =~ s/\s+$//; # Delete any leading or trailing spaces
+            # Read the lookup for the dimension
+		    $AuthorKey = lookup_dim($LogH, \%Author, \$AuthorId, $author);
+		    if (!defined $AuthorKey) {
+		    	# Lookup failed.  Log the problem.
+		    	WriteLog($LogH, "ERROR: Unable to retrieve Author ID for $author on Book ID: $BookKey\n");
+		    } else {
+		    	# Add an entry to the Book_Author fact data
+		    	push(@BookAuthor, [$BookKey, $AuthorKey]);
+		    }
+		}
+	} else {
+		WriteLog($LogH, "WARNING: No authors found for Book ID: $BookKey\n");
+	}
 	
+	# If the book is on load, then add it to the Book_Loan data
+	if (length($RecData[13]) > 0) {
+		push (@BookLoan, [$BookKey, $LoanDate, undef, $RecData[13]]);
+	}	
+	
+	# If the book has a comment, then add it to the Book_Comment data
+	if (length($RecData[14]) > 0) {
+		push (@BookComment, [$BookKey, $RecData[14]]);
+	}
 	
 	# Update the count of lines
 	$LineCount++;
 }
 
+# Close in input data file
+$Message = FileOpenClose(\$InFileH, $InFile, 'CLOSE');
+
+if ($Message) {
+	# Not fatal. Just log it and move on
+	WriteLog($LogH, $Message);
+	undef $Message;
+}
+
+# Write out the fact data to file.
+# Book data file
+WriteLog($LogH, "INFO: Exporting Book Fact\n");
+$Message = export_fact($LogH, \@Book, $RDelim, join('/',$DatDir, join('.', join('_', 'book', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Book_Authore data file
+WriteLog($LogH, "INFO: Exporting Book_Author Fact\n");
+$Message = export_fact($LogH, \@BookAuthor, $RDelim, join('/',$DatDir, join('.', join('_', 'book_author', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Book_Series data file
+WriteLog($LogH, "INFO: Exporting Book_Series Fact\n");
+$Message = export_fact($LogH, \@BookSeries, $RDelim, join('/',$DatDir, join('.', join('_', 'book_series', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Book_Loan data file
+WriteLog($LogH, "INFO: Exporting Book_Loan Fact\n");
+$Message = export_fact($LogH, \@BookLoan, $RDelim, join('/',$DatDir, join('.', join('_', 'book_loan', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Book_Comment data file
+WriteLog($LogH, "INFO: Exporting Book_Comment Fact\n");
+$Message = export_fact($LogH, \@BookComment, $RDelim, join('/',$DatDir, join('.', join('_', 'book_comment', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Write dimensions to file
+# Author dimension
+WriteLog($LogH, "INFO: Exporting Author dimension\n");
+$Message = export_dim($LogH, \%Author, $RDelim, join('/',$DatDir, join('.', join('_', 'author', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Series_Defn dimension
+WriteLog($LogH, "INFO: Exporting Series_Defn dimension\n");
+$Message = export_dim($LogH, \%SeriesDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'series_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Publisher_Defn dimension
+WriteLog($LogH, "INFO: Exporting Publisher_Defn dimension\n");
+$Message = export_dim($LogH, \%PublisherDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'publisher_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Type_Defn dimension
+WriteLog($LogH, "INFO: Exporting Type_Defn dimension\n");
+$Message = export_dim($LogH, \%TypeDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'type_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Category_Defn dimension
+WriteLog($LogH, "INFO: Exporting Category_Defn dimension\n");
+$Message = export_dim($LogH, \%CategoryDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'category_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# Sub_Category_Defn dimension
+WriteLog($LogH, "INFO: Exporting Sub_Category_Defn dimension\n");
+$Message = export_dim($LogH, \%SubCatDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'sub_category_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+# StatusDefn dimension
+WriteLog($LogH, "INFO: Exporting Status_Defn dimension\n");
+$Message = export_dim($LogH, \%StatusDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'status_defn', $LogExt), 'txt')));
+
+if ($Message) {
+	DieLog($LogH, $Message);
+}
 
 complete_report($Message);
 
@@ -212,7 +490,7 @@ sub lookup_dim {
 	    $id = $$dimref{$invalue};
 	    WriteLog($logf, "lookup_dim: INFO: Found $invalue\n");
 	} else {
-		WriteLog($logf, "lookup_dim: INFO:$invalue not found\n");
+		WriteLog($logf, "lookup_dim: INFO:$invalue not found. Adding as $$nextkey\n");
 		#$dimref->{$invalue} = $$nextkey;
 		$$dimref{$invalue} = $$nextkey;    # Add to assigned IDS
 		$id = $$nextkey;
@@ -220,6 +498,98 @@ sub lookup_dim {
 	}
     WriteLog($logf,  "lookup_dim: INFO:Return $id\n");
     return($id);
+}
+#--------------------------------------------------------------------------------------
+# export_fact: Export fact array to file.
+#    INPUT: 
+#         $logf     - Log file handle
+#         $factref  - Reference to mutlidimensional array of fact data
+#         $delim    - Record delimeter
+#         $filename - Output file name
+#    OUTPUT:
+#         $retmsg   - Errors
+#--------------------------------------------------------------------------------------
+sub export_fact {
+	my $logf     = shift;
+	my $factref  = shift;
+	my $delim    = shift;
+	my $filename = shift;
+	
+	my $retmsg;
+	
+	my $reccount = 0; # Records exported
+	my $fileh;        # File handle reference
+	
+	# Open file handle
+	$retmsg = FileOpenClose(\$fileh, $filename, 'WRITE');
+	
+	if (! defined($retmsg)) {
+		#Open succeeded, read data
+		foreach my $rec (@$factref) {
+			print $fileh join('', join($delim, @$rec), "\n");
+		}
+	}
+	
+	# If there were no errors, log the records written
+	# otherwise add the procedure name to any messages
+	if (! defined ($retmsg)) {
+	    WriteLog($logf, "export_fact: INFO: Records exported: $reccount\n");
+	} else {
+		$retmsg = join (' ', 'export_fact:', $retmsg);
+	}
+	
+	# Close file handle if open
+	if (defined($fileh)) {
+		$retmsg = FileOpenClose(\$fileh, $filename, 'CLOSE');
+	}
+	
+	return($retmsg);
+}
+#--------------------------------------------------------------------------------------
+# export_dim: Export dimension hash to file.
+#    INPUT: 
+#         $logf     - Log file handle
+#         $dimref  - Reference to hash of dimension data
+#         $delim    - Record delimeter
+#         $filename - Output file name
+#    OUTPUT:
+#         $retmsg   - Errors
+#--------------------------------------------------------------------------------------
+sub export_dim {
+	my $logf     = shift;
+	my $dimref  = shift;
+	my $delim    = shift;
+	my $filename = shift;
+	
+	my $retmsg;
+	
+	my $reccount = 0; # Records exported
+	my $fileh;        # File handle reference
+	
+	# Open file handle
+	$retmsg = FileOpenClose(\$fileh, $filename, 'WRITE');
+	
+	if (! defined($retmsg)) {
+		#Open succeeded, read data
+		foreach my $key (%$dimref) {
+			print $fileh join('', join($delim, $key, $$dimref{$key}), "\n");
+		}
+	}
+	
+	# If there were no errors, log the records written
+	# otherwise add the procedure name to any messages
+	if (! defined ($retmsg)) {
+	    WriteLog($logf, "export_dim: INFO: Records exported: $reccount\n");
+	} else {
+		$retmsg = join (' ', 'export_dim:', $retmsg);
+	}
+	
+	# Close file handle if open
+	if (defined($fileh)) {
+		$retmsg = FileOpenClose(\$fileh, $filename, 'CLOSE');
+	}
+	
+	return($retmsg);
 }
 #--------------------------------------------------------------------------------------
 # DieLog: Log program failures and trigger a die call.
@@ -273,10 +643,10 @@ sub WriteLog {
 #           date and/or time based on the $date_type parameter
 #    INPUT:
 #          $date_type - type of date and time to return
-#                       D     => YYYY/MM/DD
+#                       D     => YYYY-MM-DD
 #                       T     => HH24:MI:SS
 #                       I     => YYYY-MM-DDTHH24:MI:SS (ISO 8601)
-#                       undef => YYYY/MM/DD HH24:MI:SS
+#                       undef => YYYY-MM-DD HH24:MI:SS
 #   OUTPUT:
 #          $datetime  - current date and time
 #--------------------------------------------------------------------------------------
@@ -292,7 +662,7 @@ sub LogDate {
 
  if ($date_type eq 'D') {
 ### Date Only
-    $datetime = sprintf("%04d/%02d/%02d", (1900+$year), (1+$mon), $mday);
+    $datetime = sprintf("%04d-%02d-%02d", (1900+$year), (1+$mon), $mday);
  } elsif ($date_type eq 'T') {
 ### Time Only
     $datetime = sprintf("%02d:%02d:%02d", $hour, $min, $sec);
@@ -302,7 +672,7 @@ sub LogDate {
                         $mday, $hour, $min, $sec);
  } else {
 ###Default date and time.
-    $datetime = sprintf("%04d/%02d/%02d %02d:%02d:%02d", (1900+$year), (1+$mon), 
+    $datetime = sprintf("%04d-%02d-%02d %02d:%02d:%02d", (1900+$year), (1+$mon), 
                         $mday, $hour, $min, $sec);
  }
  return($datetime);
@@ -314,7 +684,7 @@ sub LogDate {
 #          $exttype - Type of file extension
 #                     D     => YYYYMMDD
 #                     T     => HH24MI
-#                     undef => YYYYMMDDHH24MI
+#                     undef => YYYYMMDD_HH24MI
 #   OUTPUT: 
 #          $retval  - Date and time in specified format
 #--------------------------------------------------------------------------------------
@@ -337,7 +707,7 @@ sub FileDateStamp {
 
    } else {
 # Date and time.
-      $retval = sprintf("%04d%02d%02d%02d%02d", (1900+$year), (1+$mon), $mday, $hour, $min);
+      $retval = sprintf("%04d%02d%02d_%02d%02d", (1900+$year), (1+$mon), $mday, $hour, $min);
    }
     return($retval);
 }
@@ -507,14 +877,21 @@ sub complete_report {
  my $retmsg;              # Error message from calls
  my $retcode;             # System error codes
 
-# Step 2: Close log file
+ # If the input file is still open, then try to close it
+ if (defined $InFileH) {
+ 	$retcode = FileOpenClose(\$InFileH, $InFile, 'CLOSE');
+    if ($retcode) {
+        $diemsg = join(' ', $diemsg, "complete_report: ERROR: FATAL: Unable to close open $InFile: $retcode\n");
+     }
+ }
+ 
+# Close log file
  WriteLog($LogH, "END: $ProgName\n");
 
  $retcode = FileOpenClose(\$LogH, $LogFile, 'CLOSE');
  if ($retcode) {
     $diemsg = join(' ', $diemsg, "complete_report: ERROR: FATAL: Unable to close $LogFile: $retcode\n");
  }
-
 
  if ($diemsg) {
     die "$diemsg\n";
