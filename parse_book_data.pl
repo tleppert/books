@@ -170,9 +170,9 @@ foreach my $record (<$InFileH>) {
         s/\s+$//; # Delete any leading or trailing spaces
     }
 	# Temp only to see what is going on
-	foreach my $r (@RecData) {
-		WriteLog($LogH, "INFO: $r\n");
-	}
+	#foreach my $r (@RecData) {
+	#	WriteLog($LogH, "INFO: $r\n");
+	#}
 	# Start setting the vaules for the Book record.  This will require the Defn hashes to be 
 	# updated and read.  Author will be handled as it's own loop since that data will need to
 	# be split as well.
@@ -180,7 +180,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book doesn't have a type, then default to Unknown ($TypeKey = 0).
 	# Otherwise look up the type's id
-	if (length($RecData[6]) > 0) {
+	if (defined($RecData[6]) ) {
     # Read the lookup for the dimension
 		$TypeKey = lookup_dim($LogH, \%TypeDefn, \$TypeId, $RecData[6]);
 		if (!defined ($TypeKey)) {
@@ -194,7 +194,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book doesn't have a category, then default to Unknown ($CategoryKey = 0)
 	# Otherwise look  up the category's id
-	if (length($RecData[7]) > 0) {
+	if (defined($RecData[7]) ) {
     # Read the lookup for the dimension
 		$CategoryKey = lookup_dim($LogH, \%CategoryDefn, \$CategoryId, $RecData[7]);
 		if (!defined ($CategoryKey)) {
@@ -208,7 +208,7 @@ foreach my $record (<$InFileH>) {
 
 	# If the book doesn't have a sub-category, then default it to None ($SubCatKey = 0)
 	# Otherwise look up the sub-category's id
-	if (length($RecData[8]) > 0) {
+	if (defined($RecData[8]) ) {
     # Read the lookup for the dimension
 		$SubCatKey = lookup_dim($LogH, \%SubCatDefn, \$SubCatId, $RecData[8]);
 		if (!defined ($SubCatKey)) {
@@ -222,7 +222,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book doesn't have a publisher, then default it to Unknown ($PublisherKey = 0)
 	# Otherwise look up the publisher's id
-	if (length($RecData[9]) > 0) {
+	if (defined($RecData[9]) ) {
     # Read the lookup for the dimension
 		$PublisherKey = lookup_dim($LogH, \%PublisherDefn, \$PublisherId, $RecData[9]);
 		if (!defined ($PublisherKey)) {
@@ -236,7 +236,7 @@ foreach my $record (<$InFileH>) {
 
     # If the book doesn't have a published date, then default Publish_Month and Publish_Year to a space
     # Otherwise, try to determine if we have both a month and year or just a year.
-    if (length($RecData[10]) > 0 ) {
+    if (defined($RecData[10]) ) {
     	# If the value has the date delimiter, then split it into month and year
     	if ($RecData[10] =~ m/$DDelim/) {
     		($PubMonth, $PubYear) = split(/$DDelim/, $RecData[10]);
@@ -269,7 +269,7 @@ foreach my $record (<$InFileH>) {
 	
     # If the book doesn't have and ISBN_ASIN number default it to UNKNOWN.
     # Otherwise use the value from the record.
-    if (length($RecData[11]) > 0) {
+    if (defined($RecData[11])) {
     	$IsbnAsin = $RecData[11];
     } else {
     	$IsbnAsin = 'Unknown';
@@ -277,7 +277,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book doesn't have a status, then default it to Unknown ($StatusKey = 0)
 	# Otherwise look up the status's id
-	if (length($RecData[12] > 0)) {
+	if (defined($RecData[12] )) {
     # Read the lookup for the dimension
 		$StatusKey = lookup_dim($LogH, \%StatusDefn, \$StatusId, $RecData[12]);
 		if (!defined ($StatusKey)) {
@@ -296,7 +296,7 @@ foreach my $record (<$InFileH>) {
 	# Set up the other Fact tables
 	# If the book is in a series, then look up the series id for it and add it to the
 	# the @BookSeries fact
-	if (length($RecData[2]) > 0) {
+	if (defined($RecData[2])) {
     # Read the lookup for the dimension
 		$SeriesKey = lookup_dim($LogH, \%SeriesDefn, \$SeriesId, $RecData[2]);
 		if (! defined($SeriesKey)) {
@@ -305,7 +305,7 @@ foreach my $record (<$InFileH>) {
 		} else {
 			# Check that there is a series number.  Some series aren't numbered.  If the number is missing,
 			# it needs to be made the default of a single space
-			if (length($RecData[3]) == 0) {
+			if (! defined($RecData[3])) {
 				$SeriesNum = ' ';
 			} else {
 				$SeriesNum = $RecData[3];
@@ -317,7 +317,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book has author's defined, process them.  Authors are a semi-colon delimited
 	# list of names
-	if (length($RecData[5]) > 0) {
+	if (defined($RecData[5])) {
 		@AuthorData = split(/$ADelim/, $RecData[5]);
 		foreach my $author (@AuthorData) {
 			undef $AuthorKey;
@@ -339,12 +339,12 @@ foreach my $record (<$InFileH>) {
 	}
 	
 	# If the book is on load, then add it to the Book_Loan data
-	if (length($RecData[13]) > 0) {
+	if (defined($RecData[13]) ) {
 		push (@BookLoan, [$BookKey, $LoanDate, undef, $RecData[13]]);
 	}	
 	
 	# If the book has a comment, then add it to the Book_Comment data
-	if (length($RecData[14]) > 0) {
+	if (defined($RecData[14])) {
 		push (@BookComment, [$BookKey, $RecData[14]]);
 	}
 	
@@ -495,10 +495,22 @@ sub lookup_dim {
 		$$dimref{$invalue} = $$nextkey;    # Add to assigned IDS
 		$id = $$nextkey;
 		$$nextkey++;		               # Update next available ID
+		WriteLog($logf, "lookup_dim: INFO New next key: $$nextkey\n")
 	}
+	
+	# Temp dump of hash to see what is there
+	#WriteLog($logf, "\n\n");
+	#foreach my $k (sort(keys %$dimref)) {
+	#	my $v = $$dimref{$k};
+	#	WriteLog($logf, "\t INFO: Hash key $k Value $v\n");
+	#}
+	#WriteLog($logf, "\n\n");
+	# Temp dump of hash to see what is there
+	
     WriteLog($logf,  "lookup_dim: INFO:Return $id\n");
     return($id);
 }
+
 #--------------------------------------------------------------------------------------
 # export_fact: Export fact array to file.
 #    INPUT: 
@@ -571,7 +583,8 @@ sub export_dim {
 	
 	if (! defined($retmsg)) {
 		#Open succeeded, read data
-		foreach my $key (%$dimref) {
+		foreach my $key (sort(keys %$dimref)) {
+			WriteLog($logf, "export_dim: INFO: Key: $key Value: $$dimref{key}\n");
 			print $fileh join('', join($delim, $key, $$dimref{$key}), "\n");
 		}
 	}
@@ -654,27 +667,32 @@ sub LogDate {
  my $date_type = shift;
 
  my $datetime;
-
-# Force uppercase
- $date_type = uc($date_type);
-
  my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
-
- if ($date_type eq 'D') {
-### Date Only
-    $datetime = sprintf("%04d-%02d-%02d", (1900+$year), (1+$mon), $mday);
- } elsif ($date_type eq 'T') {
-### Time Only
-    $datetime = sprintf("%02d:%02d:%02d", $hour, $min, $sec);
- } elsif ($date_type eq 'I') {
-### ISO 8601 format (no timezone)
-    $datetime=sprintf("%04d-%02d-%02dT%02d:%02d:%02d", (1900+$year), (1+$mon), 
-                        $mday, $hour, $min, $sec);
+ 
+ if (defined($date_type)) {
+ # Force uppercase if the input is defined
+    $date_type = uc($date_type);
+    if ($date_type eq 'D') {
+    # Date Only
+        $datetime = sprintf("%04d-%02d-%02d", (1900+$year), (1+$mon), $mday);
+    } elsif ($date_type eq 'T') {
+    # Time Only
+        $datetime = sprintf("%02d:%02d:%02d", $hour, $min, $sec);
+    } elsif ($date_type eq 'I') {
+    # ISO 8601 format (no timezone)
+        $datetime=sprintf("%04d-%02d-%02dT%02d:%02d:%02d", (1900+$year), (1+$mon), 
+                            $mday, $hour, $min, $sec);
+    } else {
+    #Default date and time.
+        $datetime = sprintf("%04d-%02d-%02d %02d:%02d:%02d", (1900+$year), (1+$mon), 
+                            $mday, $hour, $min, $sec);
+     }    
  } else {
-###Default date and time.
-    $datetime = sprintf("%04d-%02d-%02d %02d:%02d:%02d", (1900+$year), (1+$mon), 
-                        $mday, $hour, $min, $sec);
- }
+  #Default date and time.
+        $datetime = sprintf("%04d-%02d-%02d %02d:%02d:%02d", (1900+$year), (1+$mon), 
+                            $mday, $hour, $min, $sec);
+}
+
  return($datetime);
 }
 
