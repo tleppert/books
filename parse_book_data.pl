@@ -25,6 +25,7 @@ my $LogExt     = FileDateStamp();                # Log file date and time stamp
 my $ProjDir = 'C:/Users/Tom/MyProjects';         # Project work tree
 my $LogDir  = join ('/', $ProjDir, 'Log');       # Log file directory
 my $DatDir  = join('/', $ProjDir, 'Data');       # Extract file direcotry
+my $ScptDir = join('/', $ProjDir, 'Script');     # Load script directory
 
 # File information
 my $LogH;                                        # Log file handle
@@ -340,12 +341,12 @@ foreach my $record (<$InFileH>) {
 	}
 	
 	# If the book is on load, then add it to the Book_Loan data
-	if (defined($RecData[13]) ) {
+	if (length($RecData[13]) > 0 ) {
 		push (@BookLoan, [$BookKey, $LoanDate, undef, $RecData[13]]);
 	}	
 	
 	# If the book has a comment, then add it to the Book_Comment data
-	if (defined($RecData[14])) {
+	if (length($RecData[14]) > 0) {
 		push (@BookComment, [$BookKey, $RecData[14]]);
 	}
 	
@@ -371,7 +372,7 @@ if ($Message) {
 	DieLog($LogH, $Message);
 }
 
-# Book_Authore data file
+# Book_Author data file
 WriteLog($LogH, "INFO: Exporting Book_Author Fact\n");
 $Message = export_fact($LogH, \@BookAuthor, $RDelim, join('/',$DatDir, join('.', join('_', 'book_author', $LogExt), 'txt')));
 
@@ -404,9 +405,10 @@ if ($Message) {
 }
 
 # Write dimensions to file
-# Author dimension
+# Author dimension.  This one goes to a staging table since there is additional data that needs to be
+# created (First_Name and Last_Name from Full_Name)
 WriteLog($LogH, "INFO: Exporting Author dimension\n");
-$Message = export_dim($LogH, \%Author, $RDelim, join('/',$DatDir, join('.', join('_', 'author', $LogExt), 'txt')));
+$Message = export_dim($LogH, \%Author, $RDelim, join('/',$DatDir, join('.', join('_', 'author_stg', $LogExt), 'txt')));
 
 if ($Message) {
 	DieLog($LogH, $Message);
@@ -457,6 +459,15 @@ WriteLog($LogH, "INFO: Exporting Status_Defn dimension\n");
 $Message = export_dim($LogH, \%StatusDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'status_defn', $LogExt), 'txt')));
 
 if ($Message) {
+	DieLog($LogH, $Message);
+}
+
+
+# Generate SQL Bulk Load Script that will be used to clear the tables
+# then load the exported data.
+$Message = gen_bulk_load($LogH, $ScptDir, $DatDir, $LogExt);
+
+if ($Message){
 	DieLog($LogH, $Message);
 }
 
@@ -586,7 +597,7 @@ sub export_dim {
 		#Open succeeded, read data
 		foreach my $key (sort(keys %$dimref)) {
 			WriteLog($logf, "export_dim: INFO: Key: $key Value: $$dimref{$key} \n");
-			print $fileh join('', join($delim, $key, $$dimref{$key}), "\n");
+			print $fileh join('', join($delim, $$dimref{$key}, $key), "\n");
 		}
 	}
 	
@@ -603,6 +614,76 @@ sub export_dim {
 		$retmsg = FileOpenClose(\$fileh, $filename, 'CLOSE');
 	}
 	
+	return($retmsg);
+}
+#--------------------------------------------------------------------------------------
+# gen_bulk_load: Create a T-SQL script to clear the fact, dimension and stage tables
+#                then bulk load the exported data files.
+#    INPUT: 
+#         $logf      - Log file handle
+#         $filedir   - Script file directory
+#         $datdir    - Data file directory
+#         $filestamp - File date and time stamp
+#    OUTPUT:
+#         $retmsg    - Errors
+#--------------------------------------------------------------------------------------
+sub gen_bulk_load {
+	my $logf      = shift;
+	my $filedir   = shift;
+	my $datdir    = shift;
+	my $filestamp = shift;
+	
+	my $retmsg;
+	
+	# Script file name
+	my $filename = join('/', $filedir, join('.', join('_', 'book_loader', $filestamp), 'sql'));
+	my $fileh;     # File handle
+	
+	# Switch the path for the data files from "/" to "\"
+	#$datdir =~ s/\\/\//g;
+	$datdir =~ s/\//\\/g;
+	
+	# table/file list.  Files are named the same as tables
+	my @tablelist = ('author_stg', 'Book', 'Book_Author', 'Book_Comment', 'Book_Loan',
+                     'Book_Series', 'Category_Defn', 'Publisher_Defn', 'Rating_Defn',
+                     'Series_Defn', 'Status_Defn', 'Sub_Category_Defn','Type_Defn');
+	
+	# Open script file for writing
+	$retmsg = FileOpenClose(\$fileh, $filename, 'WRITE');
+	
+	if (! $retmsg) {
+		# Switch to the correct database
+	    print $fileh "USE BOOKS;\nGO\n\n";
+	    
+	    # Write the bulk load for each table
+		foreach my $tabname (@tablelist) {
+			print $fileh "TRUNCATE TABLE dbo.$tabname\n";
+			print $fileh "GO\n\n";
+			print $fileh "BULK INSERT dbo.$tabname\n";
+            print $fileh join('', 'FROM ', "'", join('\\', $datdir,join('.', join('_', $tabname, $filestamp), 'txt')), "'", "\n");
+            print $fileh "WITH ( FIELDTERMINATOR ='|', FIRSTROW = 1 )\n";
+            print $fileh "GO\n\n";
+		}
+		# Move the Author data from stage to lookup
+		print $fileh "TRUNCATE TABLE dbo.author\nGO\n\n";
+		# Split full_name into last_name and first_name
+		print $fileh "INSERT INTO dbo.author (author_id, last_name, first_name, full_name)\n";
+		print $fileh "SELECT author_id, RTRIM(LTRIM(Substring(Full_Name, 1,Charindex(',', Full_Name)-1))) as Last_Name,\n";
+		print $fileh "RTRIM(LTRIM(Substring(Full_Name, Charindex(',', Full_Name)+1, LEN(Full_Name)))) as  First_Name, full_name\n";
+		print $fileh "FROM author_stg\n";
+		print $fileh join('', "WHERE full_name LIKE '", '%', ',', '%', "'\n");
+		print $fileh "GO\n\n";
+		# If full_name does not contain a comma, then copy full_name into first_name and default last_name to a space
+		print $fileh "INSERT INTO dbo.author (author_id, first_name, last_name,  full_name)\n";
+		print $fileh "SELECT author_id,full_name AS first_name, ' ' as Last_Name, full_name\n";
+		print $fileh "FROM author_stg\n";
+		print $fileh join('', "WHERE full_name NOT LIKE '", '%', ',', '%', "'\n");
+		print $fileh "GO\n\n";
+		# Close script file
+	    $retmsg = FileOpenClose($fileh, $filename, 'CLOSE');
+	} else {
+		$retmsg = join(' ', 'gen_bulk_load:', $retmsg);
+	}	
 	return($retmsg);
 }
 #--------------------------------------------------------------------------------------
@@ -631,8 +712,7 @@ sub DieLog {
      die "$msg";
  }
 
-}
- 
+} 
 #--------------------------------------------------------------------------------------
 # WriteLog: Write an entry to the log file.
 #           Takes a file handle and message.
@@ -651,7 +731,6 @@ sub WriteLog {
  print $logf "[$logdate] $msg";
 # print "[$logdate] $msg";
 }
-
 #--------------------------------------------------------------------------------------
 # LogDate: Get the date and time.  The procedure can return a 
 #           date and/or time based on the $date_type parameter
@@ -696,7 +775,6 @@ sub LogDate {
 
  return($datetime);
 }
-
 #--------------------------------------------------------------------------------------
 # FileDateStamp: Return date, time or date-time stamp.
 #    INPUT: 
@@ -733,7 +811,6 @@ sub FileDateStamp {
    }
    return($retval);
 }
-
 #--------------------------------------------------------------------------------------
 # FileOpenClose: Open or close a file for read, write or append.
 #                Check action.
@@ -813,7 +890,6 @@ sub FileOpenClose {
   }
   return($retmsg);
 }
-
 #--------------------------------------------------------------------------------------
 # FileCopyMove: Move file to interface directory to be picked up by
 #               the load program.
@@ -866,7 +942,6 @@ sub FileCopyMove {
 
   return($retmsg);
 }
-
 #--------------------------------------------------------------------------------------
 # CheckFileExist: Check if a file exists.
 #    INPUT:
@@ -884,7 +959,6 @@ sub CheckFileExist {
      return(0);
   }
 }
-
 #--------------------------------------------------------------------------------------
 # complete_report: Disconnect from data base, mail and backup
 #                  log file.
