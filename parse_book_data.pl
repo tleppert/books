@@ -32,7 +32,7 @@ my $LogH;                                        # Log file handle
 # Log file
 my $LogFile = join('/', $LogDir, join('.', join('_', $ProgName, $LogExt), 'log'));
 my $InFileH;                                     # Input file handle
-my $InFile  = join('/', $DatDir,'export.csv' );  # Input file
+my $InFile  = join('/', $DatDir,'Catalog.csv' );  # Input file 8/22/2016 update filename
 my $OutFileH;                                    # Output file handle
 my $OutFile;                                     # Data file
 my $LineCount = 0;                               # Data file line count
@@ -179,6 +179,9 @@ foreach my $record (<$InFileH>) {
 	# be split as well.
 	$BookKey = $RecData[1];
 	
+	# 8/22/2016 - skip record of the title field is blank
+	next if (! defined $RecData[4]);
+	
 	# If the book doesn't have a type, then default to Unknown ($TypeKey = 0).
 	# Otherwise look up the type's id
 	if (length($RecData[6]) > 0) {
@@ -245,6 +248,9 @@ foreach my $record (<$InFileH>) {
     		if (length($PubMonth) > 2) {
     			WriteLog($LogH, "ERROR: Invalid Publish Month $PubMonth on Book ID: $BookKey\n");
     			$PubMonth = ' ';
+    		} else {
+    		# Add 8/23/2016 Zero pad month so it will be 2 digits.
+    			$PubMonth = sprintf("%02d", $PubMonth);
     		}
     		# If the year isn't 4 digits, log problem and use the default.
     		if (length($PubYear) != 4) {
@@ -292,8 +298,9 @@ foreach my $record (<$InFileH>) {
 	}		
 
 	# Build the complete BOOK record and add it to the @Book fact data
-	#book_id, title, publish_month, publish_year, isbn_asin, category_id, sub_category_id, publisher_id, status_id, rating_id
-	push(@Book, [$BookKey, $RecData[4], $PubMonth, $PubYear, $IsbnAsin, $CategoryKey, $SubCatKey, $PublisherKey, $StatusKey, $RatingKey]);
+	# 8/22/2016 Add missing field format_id (TypeKey)
+	#book_id, title, publish_month, publish_year, isbn_asin, format_id, category_id, sub_category_id, publisher_id, status_id, rating_id
+	push(@Book, [$BookKey, $RecData[4], $PubMonth, $PubYear, $IsbnAsin, $TypeKey, $CategoryKey, $SubCatKey, $PublisherKey, $StatusKey, $RatingKey]);
 	
 	# Set up the other Fact tables
 	# If the book is in a series, then look up the series id for it and add it to the
@@ -319,6 +326,7 @@ foreach my $record (<$InFileH>) {
 	
 	# If the book has author's defined, process them.  Authors are a semi-colon delimited
 	# list of names
+	# Modified 8/17/2016 - Author "Unknown" exists in data. Make AuthorKey 0 to match other defaults
 	if (length($RecData[5]) > 0) {
 		@AuthorData = split(/$ADelim/, $RecData[5]);
 		foreach my $author (@AuthorData) {
@@ -326,14 +334,19 @@ foreach my $record (<$InFileH>) {
 			$author =~ s/\t/ /;  # Convert TAB to space. Do first in case it is at the end or beginning.
             $author =~ s/^\s+//; # Delete any leading spaces
             $author =~ s/\s+$//; # Delete any leading or trailing spaces
-            # Read the lookup for the dimension
-		    $AuthorKey = lookup_dim($LogH, \%Author, \$AuthorId, $author);
-		    if (!defined $AuthorKey) {
-		    	# Lookup failed.  Log the problem.
-		    	WriteLog($LogH, "ERROR: Unable to retrieve Author ID for $author on Book ID: $BookKey\n");
-		    } else {
-		    	# Add an entry to the Book_Author fact data
-		    	push(@BookAuthor, [$BookKey, $AuthorKey]);
+            # Modified 8/17/2016 - Check for author UNKNOWN. Use uppercase function to catch all possible mixed case values
+            if (uc($author) eq 'UNKNOWN') {
+            	$AuthorKey = 0;
+            } else {
+                # Read the lookup for the dimension
+		        $AuthorKey = lookup_dim($LogH, \%Author, \$AuthorId, $author);
+		        if (!defined $AuthorKey) {
+		    	   # Lookup failed.  Log the problem.
+		    	   WriteLog($LogH, "ERROR: Unable to retrieve Author ID for $author on Book ID: $BookKey\n");
+		        } else {
+		    	   # Add an entry to the Book_Author fact data
+		    	   push(@BookAuthor, [$BookKey, $AuthorKey]);
+		        }
 		    }
 		}
 	} else {
@@ -431,8 +444,9 @@ if ($Message) {
 }
 
 # Type_Defn dimension
-WriteLog($LogH, "INFO: Exporting Type_Defn dimension\n");
-$Message = export_dim($LogH, \%TypeDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'type_defn', $LogExt), 'txt')));
+# 8/22/2016 Type_Defn is reserved table in SQL Server.  Change to new name Format_Defn
+WriteLog($LogH, "INFO: Exporting Format_Defn dimension\n");
+$Message = export_dim($LogH, \%TypeDefn, $RDelim, join('/',$DatDir, join('.', join('_', 'format_defn', $LogExt), 'txt')));
 
 if ($Message) {
 	DieLog($LogH, $Message);
@@ -644,9 +658,10 @@ sub gen_bulk_load {
 	$datdir =~ s/\//\\/g;
 	
 	# table/file list.  Files are named the same as tables
+	# 8/22/2016 - Change Type_Defn to Format_Defn
 	my @tablelist = ('author_stg', 'Book', 'Book_Author', 'Book_Comment', 'Book_Loan',
                      'Book_Series', 'Category_Defn', 'Publisher_Defn', 'Rating_Defn',
-                     'Series_Defn', 'Status_Defn', 'Sub_Category_Defn','Type_Defn');
+                     'Series_Defn', 'Status_Defn', 'Sub_Category_Defn','Format_Defn');
 	
 	# Open script file for writing
 	$retmsg = FileOpenClose(\$fileh, $filename, 'WRITE');
@@ -656,12 +671,13 @@ sub gen_bulk_load {
 	    print $fileh "USE BOOKS;\nGO\n\n";
 	    
 	    # Write the bulk load for each table
+	    # Modified 8/17/2016 to include CODEPAGE for extended character set load.
 		foreach my $tabname (@tablelist) {
 			print $fileh "TRUNCATE TABLE dbo.$tabname\n";
 			print $fileh "GO\n\n";
 			print $fileh "BULK INSERT dbo.$tabname\n";
             print $fileh join('', 'FROM ', "'", join('\\', $datdir,join('.', join('_', $tabname, $filestamp), 'txt')), "'", "\n");
-            print $fileh "WITH ( FIELDTERMINATOR ='|', FIRSTROW = 1 )\n";
+            print $fileh "WITH ( FIELDTERMINATOR ='|', FIRSTROW = 1 ,CODEPAGE = 'ACP' )\n";
             print $fileh "GO\n\n";
 		}
 		# Move the Author data from stage to lookup
